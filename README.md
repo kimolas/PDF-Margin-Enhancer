@@ -1,6 +1,6 @@
 # Math PDF Enhancer for Tablets (100% Vibe-coded by Gemini 3 Pro)
 
-A client-side web application that processes PDFs to add wide margins for note-taking. It utilizes PDFium via WebAssembly (WASM) to modify PDF structures directly in the browser, ensuring user privacy by keeping all data local.
+A client-side web application that processes PDFs to add wide margins for note-taking. It utilizes PDFium via WebAssembly (WASM) to modify PDF structures directly in the browser, ensuring user privacy by keeping all data local. Can be especially useful for annotating PDFs on an e-ink device that doesn't support two documents side-by-side (e.g. Kindle Scribe, reMarkable 2). 
 
 ## Features
 
