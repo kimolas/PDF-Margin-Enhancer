@@ -3,318 +3,168 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Math PDF Enhancer</title>
+    <title>Textbook Margin Enhancer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        :root {
-            --primary: #007AFF;
-            --bg: #F5F5F7;
-            --card: #FFFFFF;
-            --text: #1D1D1F;
-            --subtext: #86868B;
-            --border: #E5E5EA;
+        .drop-zone {
+            border: 2px dashed #cbd5e1;
+            transition: all 0.3s ease;
         }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--bg);
-            color: var(--text);
-            margin: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
+        .drop-zone.active {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
         }
-
-        .container {
-            background: var(--card);
-            width: 100%;
-            max-width: 480px;
-            padding: 40px;
-            border-radius: 18px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
-            text-align: center;
-        }
-
-        h1 {
-            font-size: 24px;
-            font-weight: 600;
-            margin-bottom: 10px;
-            letter-spacing: -0.5px;
-        }
-
-        p {
-            color: var(--subtext);
-            font-size: 15px;
-            margin-bottom: 30px;
-            line-height: 1.4;
-        }
-
-        .upload-zone {
-            border: 2px dashed var(--border);
-            border-radius: 12px;
-            padding: 40px 20px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            position: relative;
-        }
-
-        .upload-zone:hover {
-            border-color: var(--primary);
-            background-color: rgba(0,122,255,0.02);
-        }
-
-        .upload-zone input {
-            position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
-            opacity: 0;
-            cursor: pointer;
-        }
-
-        .icon {
-            font-size: 32px;
-            color: var(--primary);
-            margin-bottom: 10px;
-            display: block;
-        }
-
-        .btn {
-            background-color: var(--primary);
-            color: white;
-            border: none;
-            padding: 14px 24px;
-            font-size: 16px;
-            font-weight: 500;
-            border-radius: 10px;
-            cursor: pointer;
-            width: 100%;
-            margin-top: 20px;
-            transition: opacity 0.2s;
-        }
-
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .progress-container {
-            margin-top: 25px;
-            display: none;
-        }
-
-        .progress-bar {
-            height: 6px;
-            background: var(--border);
-            border-radius: 3px;
-            overflow: hidden;
-            margin-bottom: 8px;
-        }
-
-        .progress-fill {
-            height: 100%;
-            width: 0%;
-            background: var(--primary);
-            transition: width 0.2s ease;
-        }
-
-        .status-text {
-            font-size: 13px;
-            color: var(--subtext);
-            font-variant-numeric: tabular-nums;
-        }
-
-        .hidden { display: none; }
     </style>
 </head>
-<body>
+<body class="bg-slate-50 min-h-screen flex items-center justify-center p-4">
 
-<div class="container">
-    <h1>Textbook Enhancer</h1>
-    <p>Add 200pt margins and structural dividers for tablet note-taking. Processed locally.</p>
-
-    <div class="upload-zone">
-        <span class="icon">📄</span>
-        <span id="file-label">Drop PDF here or click to browse</span>
-        <input type="file" id="pdf-input" accept="application/pdf">
-    </div>
-
-    <div class="progress-container" id="progress-ui">
-        <div class="progress-bar">
-            <div class="progress-fill" id="progress-fill"></div>
+    <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md border border-slate-100">
+        <h1 class="text-2xl font-bold text-slate-800 mb-2">Textbook Margin Enhancer</h1>
+        
+        <div class="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-6 text-xs text-slate-500">
+            <strong>Setup Requirement:</strong> Ensure <code>pdfium.js</code>, <code>pdfium.wasm</code>, and <code>worker.js</code> are in this same folder.
         </div>
-        <div class="status-text" id="status-text">Ready</div>
+
+        <div id="dropZone" class="drop-zone rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer mb-6">
+            <div id="fileIcon" class="mb-4 text-blue-500">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                </svg>
+            </div>
+            <p id="fileName" class="text-sm font-medium text-slate-600 text-center">Click or drag PDF here</p>
+            <input type="file" id="fileInput" class="hidden" accept="application/pdf">
+        </div>
+
+        <div id="progressContainer" class="hidden mb-6">
+            <div class="flex justify-between text-xs text-slate-500 mb-1">
+                <span id="statusText">Processing...</span>
+                <span id="percentText">0%</span>
+            </div>
+            <div class="w-full bg-slate-200 rounded-full h-1.5">
+                <div id="progressBar" class="bg-blue-600 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+        </div>
+
+        <button id="enhanceBtn" disabled class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold rounded-lg transition-colors shadow-lg shadow-blue-200 flex items-center justify-center">
+            <span>Enhance PDF</span>
+        </button>
+
+        <div id="log" class="mt-6 font-mono text-[10px] text-slate-400 overflow-y-auto max-h-32 border-t pt-4">
+            > Initializing Worker...
+        </div>
     </div>
 
-    <button class="btn" id="process-btn" disabled>Enhance PDF</button>
-</div>
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileNameDisp = document.getElementById('fileName');
+        const enhanceBtn = document.getElementById('enhanceBtn');
+        const log = document.getElementById('log');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const percentText = document.getElementById('percentText');
+        const statusText = document.getElementById('statusText');
 
-<!-- 
-    EMBEDDED WORKER SCRIPT 
-    This is read as a string and converted to a Blob URL to run in a background thread.
--->
-<script id="worker-code" type="javascript/worker">
-    // Import Libraries from CDN inside the Worker
-    importScripts('https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js');
+        let selectedFile = null;
+        let worker = null;
+        let isEngineReady = false;
 
-    // Configuration
-    const CONFIG = {
-        EXTRA_MARGIN: 200,      // Points (approx 2.7 inches)
-        DIVIDER_COLOR: { r: 0.75, g: 0.75, b: 0.75 }, // Light Gray
-        DIVIDER_WIDTH: 1
-    };
+        function addLog(msg, isError = false) {
+            const div = document.createElement('div');
+            div.textContent = `> ${msg}`;
+            if (isError) div.className = 'text-red-500';
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        }
 
-    self.onmessage = async function(e) {
-        const { pdfBuffer } = e.data;
-
-        try {
-            // 1. Load the Document
-            const pdfDoc = await PDFLib.PDFDocument.load(pdfBuffer);
-            const pages = pdfDoc.getPages();
-            const totalPages = pages.length;
-
-            // 2. Iterate and Modify
-            for (let i = 0; i < totalPages; i++) {
-                const page = pages[i];
-                const { width, height } = page.getSize();
+        // Initialize Worker
+        function initWorker() {
+            try {
+                if (worker) return; // Already initialized
                 
-                // --- Structural Surgery: Expand MediaBox ---
-                // We expand width and shift the view if necessary. 
-                // For simplicity, we add margin to the RIGHT side.
-                const newWidth = width + CONFIG.EXTRA_MARGIN;
+                worker = new Worker('worker.js');
                 
-                // Update the page size (MediaBox)
-                page.setSize(newWidth, height);
+                worker.onmessage = (e) => {
+                    const { type, data } = e.data;
+                    
+                    if (type === 'READY') {
+                        isEngineReady = true;
+                        addLog('PDFium Engine Online.');
+                        if (selectedFile) enhanceBtn.disabled = false;
+                    } 
+                    else if (type === 'COMPLETE') {
+                        addLog('Processing complete!');
+                        downloadFile(data, `enhanced_${selectedFile.name}`);
+                        resetUI();
+                    } 
+                    else if (type === 'ERROR') {
+                        addLog(`ERROR: ${data}`, true);
+                        resetUI();
+                    }
+                };
                 
-                // --- Visual Enhancement: Draw Divider ---
-                // The line is drawn at the original width boundary
-                page.drawLine({
-                    start: { x: width, y: 0 },
-                    end: { x: width, y: height },
-                    thickness: CONFIG.DIVIDER_WIDTH,
-                    color: PDFLib.rgb(CONFIG.DIVIDER_COLOR.r, CONFIG.DIVIDER_COLOR.g, CONFIG.DIVIDER_COLOR.b),
-                    opacity: 0.5
-                });
-
-                // --- Future Hook: Theorem Parsing ---
-                // This is where you would iterate over extracted text coordinates
-                // and use page.drawText() or pdfDoc.context.register() to add links.
-                
-                // Report Progress (every 5 pages or last page)
-                if (i % 5 === 0 || i === totalPages - 1) {
-                    self.postMessage({
-                        type: 'PROGRESS',
-                        current: i + 1,
-                        total: totalPages
-                    });
-                }
+                worker.onerror = (err) => {
+                    addLog('Worker Error. Check console.', true);
+                    console.error(err);
+                };
+            } catch (e) {
+                addLog('Failed to start worker.', true);
             }
-
-            // 3. Serialize and Return
-            const modifiedPdfBytes = await pdfDoc.save();
-            
-            // Transfer the result back (Zero-copy if using Transferables, but Uint8Array is fast enough here)
-            self.postMessage({
-                type: 'COMPLETE',
-                buffer: modifiedPdfBytes
-            }, [modifiedPdfBytes.buffer]); // Transferable for performance
-
-        } catch (err) {
-            self.postMessage({ type: 'ERROR', message: err.message });
         }
-    };
-</script>
 
-<!-- MAIN APP LOGIC -->
-<script>
-    // --- 1. Worker Initialization ---
-    // We convert the embedded script above into a Blob URL
-    const workerBlob = new Blob(
-        [document.getElementById('worker-code').textContent], 
-        { type: "text/javascript" }
-    );
-    const workerUrl = URL.createObjectURL(workerBlob);
-    const worker = new Worker(workerUrl);
-
-    // --- 2. UI References ---
-    const dom = {
-        input: document.getElementById('pdf-input'),
-        label: document.getElementById('file-label'),
-        btn: document.getElementById('process-btn'),
-        progressUi: document.getElementById('progress-ui'),
-        fill: document.getElementById('progress-fill'),
-        status: document.getElementById('status-text')
-    };
-
-    let selectedFile = null;
-
-    // --- 3. Event Listeners ---
-    
-    // File Selection
-    dom.input.addEventListener('change', (e) => {
-        if (e.target.files[0]) {
-            selectedFile = e.target.files[0];
-            dom.label.innerText = selectedFile.name;
-            dom.btn.disabled = false;
-            dom.status.innerText = "Ready to enhance";
-            dom.fill.style.width = '0%';
+        function downloadFile(bytes, name) {
+            const blob = new Blob([bytes], { type: 'application/pdf' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name;
+            a.click();
+            URL.revokeObjectURL(url);
         }
-    });
 
-    // Start Processing
-    dom.btn.addEventListener('click', async () => {
-        if (!selectedFile) return;
+        function resetUI() {
+            enhanceBtn.disabled = false;
+            enhanceBtn.querySelector('span').textContent = 'Enhance PDF';
+            progressContainer.classList.add('hidden');
+        }
 
-        // UI Updates
-        dom.btn.disabled = true;
-        dom.progressUi.style.display = 'block';
-        dom.status.innerText = "Initializing engine...";
+        // Event Listeners
+        dropZone.onclick = () => fileInput.click();
         
-        // Read File
-        const buffer = await selectedFile.arrayBuffer();
+        fileInput.onchange = (e) => {
+            if (e.target.files.length > 0) {
+                selectedFile = e.target.files[0];
+                fileNameDisp.textContent = selectedFile.name;
+                if (isEngineReady) enhanceBtn.disabled = false;
+                addLog(`Loaded: ${selectedFile.name}`);
+            }
+        };
 
-        // Send to Worker
-        worker.postMessage({ pdfBuffer: buffer }, [buffer]);
-    });
+        enhanceBtn.onclick = async () => {
+            if (!selectedFile) return;
 
-    // --- 4. Worker Communication ---
-    worker.onmessage = function(e) {
-        const data = e.data;
+            enhanceBtn.disabled = true;
+            enhanceBtn.querySelector('span').textContent = 'Processing...';
+            progressContainer.classList.remove('hidden');
+            progressBar.style.width = '30%'; 
+            percentText.textContent = '30%';
+            statusText.textContent = 'Enhancing...';
 
-        if (data.type === 'PROGRESS') {
-            const percentage = Math.round((data.current / data.total) * 100);
-            dom.fill.style.width = `${percentage}%`;
-            dom.status.innerText = `Processing page ${data.current} of ${data.total}`;
-        }
-        
-        else if (data.type === 'COMPLETE') {
-            dom.fill.style.width = '100%';
-            dom.status.innerText = "Finalizing PDF...";
-            downloadPDF(data.buffer, `enhanced_${selectedFile.name}`);
-            
-            // Reset UI
-            dom.btn.disabled = false;
-            dom.status.innerText = "Done!";
-        }
-        
-        else if (data.type === 'ERROR') {
-            alert("Error: " + data.message);
-            dom.btn.disabled = false;
-            dom.status.innerText = "Failed";
-        }
-    };
+            if (!worker) initWorker();
 
-    // --- 5. Helper Functions ---
-    function downloadPDF(buffer, filename) {
-        const blob = new Blob([buffer], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-    }
-</script>
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                worker.postMessage({
+                    type: 'PROCESS_PDF',
+                    data: e.target.result,
+                    config: { marginSize: 180 } 
+                }, [e.target.result]);
+            };
+            reader.readAsArrayBuffer(selectedFile);
+        };
 
+        // Initialize
+        initWorker();
+    </script>
 </body>
 </html>
