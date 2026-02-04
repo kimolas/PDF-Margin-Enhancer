@@ -19,7 +19,7 @@ To run this application locally, you need the following files in the same direct
 3. `pdfium.js` (Emscripten glue code for PDFium)
 4. `pdfium.wasm` (Compiled WebAssembly module)
 
-**Note:** You must obtain a compatible build of `pdfium.js` and `pdfium.wasm`. This project is designed to work with standard Emscripten builds of PDFium. The binaries in this repo were downloaded [here](https://github.com/bblanchon/pdfium-binaries?tab=readme-ov-file). 
+**Note:** You must obtain a compatible build of `pdfium.js` and `pdfium.wasm`. This project is designed to work with standard Emscripten builds of PDFium. The binaries in this repo were downloaded from the [pdfium-binaries repo](https://github.com/bblanchon/pdfium-binaries?tab=readme-ov-file). 
 
 ## Installation & Usage
 
