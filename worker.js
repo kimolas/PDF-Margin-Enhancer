@@ -59,11 +59,60 @@ const initPdfium = async () => {
     throw new Error("No PDFium module found.");
 };
 
-const applyMarginsRaw = (pdfium, page, config, pageIndex) => {
+const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR, origT) => {
+    const getPageCountObjects = pdfium.FPDFPage_CountObjects || pdfium._FPDFPage_CountObjects;
+    const getPageObject = pdfium.FPDFPage_GetObject || pdfium._FPDFPage_GetObject;
+    const getPageObjBounds = pdfium.FPDFPageObj_GetBounds || pdfium._FPDFPageObj_GetBounds;
+    const floatPtrs = pdfium._malloc(16);
+    const heapF32 = getHeap(pdfium, 'HEAPF32');
+
+    let minL = origR, maxR = origL, minB = origT, maxT = origB;
+    let foundContent = false;
+
+    if (getPageCountObjects && getPageObject && getPageObjBounds) {
+        const objCount = getPageCountObjects(page);
+        for (let i = 0; i < objCount; i++) {
+            const obj = getPageObject(page, i);
+            if (getPageObjBounds(obj, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12)) {
+                const objL = heapF32[floatPtrs >> 2];
+                const objB = heapF32[(floatPtrs + 4) >> 2];
+                const objR = heapF32[(floatPtrs + 8) >> 2];
+                const objT = heapF32[(floatPtrs + 12) >> 2];
+
+                // Heuristic: Ignore objects that are roughly the size of the full page (background layers)
+                const tolerance = 5.0; 
+                const isFullPage = (Math.abs(objL - origL) < tolerance) &&
+                                   (Math.abs(objR - origR) < tolerance) &&
+                                   (Math.abs(objT - origT) < tolerance) &&
+                                   (Math.abs(objB - origB) < tolerance);
+
+                if (!isFullPage) {
+                    if (objL < minL) minL = objL;
+                    if (objR > maxR) maxR = objR;
+                    if (objB < minB) minB = objB;
+                    if (objT > maxT) maxT = objT;
+                    foundContent = true;
+                }
+            }
+        }
+    }
+    
+    pdfium._free(floatPtrs);
+
+    if (foundContent) {
+        return { L: minL, B: minB, R: maxR, T: maxT, isEmpty: false };
+    } else {
+        // Return center point for empty pages
+        const midX = (origL + origR) / 2;
+        const midY = (origB + origT) / 2;
+        return { L: midX, B: midY, R: midX, T: midY, isEmpty: true };
+    }
+};
+
+const applyMarginsRaw = (pdfium, page, config, pageIndex, overrideBounds = null, uniformDims = null) => {
     const getMediaBox = pdfium.FPDFPage_GetMediaBox || pdfium._FPDFPage_GetMediaBox;
     const setMediaBox = pdfium.FPDFPage_SetMediaBox || pdfium._FPDFPage_SetMediaBox;
     const setCropBox = pdfium.FPDFPage_SetCropBox || pdfium._FPDFPage_SetCropBox;
-    const getBoundingBox = pdfium.FPDF_GetPageBoundingBox || pdfium._FPDF_GetPageBoundingBox;
 
     const floatPtrs = pdfium._malloc(16);
     const success = getMediaBox(page, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12);
@@ -79,37 +128,36 @@ const applyMarginsRaw = (pdfium, page, config, pageIndex) => {
 
         if (config.tablet) {
             // Tablet Optimization Mode
-            
-            // Try to get actual content bounding box to remove original whitespace
-            if (getBoundingBox) {
-                const successBox = getBoundingBox(page, floatPtrs);
-                if (successBox) {
-                    const cL = heapF32[floatPtrs >> 2];
-                    const cT = heapF32[(floatPtrs + 4) >> 2]; // Struct FS_RECTF: left, top, right, bottom
-                    const cR = heapF32[(floatPtrs + 8) >> 2];
-                    const cB = heapF32[(floatPtrs + 12) >> 2];
-                    
-                    // Sanity check: ensure content box is valid
-                    if (cR > cL && cT > cB) {
-                        L = cL;
-                        B = cB;
-                        R = cR;
-                        T = cT;
-                    }
-                }
+            if (overrideBounds) {
+                L = overrideBounds.L;
+                R = overrideBounds.R;
+                B = overrideBounds.B;
+                T = overrideBounds.T;
             }
 
-            const { width: wd, height: hd, epsilon = 0 } = config.tablet;
-            const hp = T - B;
+            const { epsilon = 0 } = config.tablet;
             
-            // Calculate new dimensions based on tablet aspect ratio
-            const targetRatio = wd / hd;
-            const newHeight = hp + (epsilon * 2);
-            const newWidth = newHeight * targetRatio;
+            // Use uniform dimensions if provided, otherwise calculate per-page (legacy behavior)
+            let newHeight, newWidth;
+            if (uniformDims) {
+                newHeight = uniformDims.height;
+                newWidth = uniformDims.width;
+            } else {
+                const { width: wd, height: hd } = config.tablet;
+                const hp = T - B;
+                const targetRatio = wd / hd;
+                newHeight = hp + (epsilon * 2);
+                newWidth = newHeight * targetRatio;
+            }
 
             // Vertical Alignment: Center content
-            newB = B - epsilon;
-            newT = T + epsilon;
+            // We want the content (T-B) to be centered in newHeight
+            // Center Y of content = (T+B)/2
+            // New Top = Center Y + newHeight/2
+            // New Bottom = Center Y - newHeight/2
+            const centerY = (T + B) / 2;
+            newT = centerY + (newHeight / 2);
+            newB = centerY - (newHeight / 2);
 
             // Horizontal Alignment
             const side = config.side || 'right';
@@ -203,11 +251,64 @@ self.onmessage = async (e) => {
             const getPageCount = pdfium.FPDF_GetPageCount || pdfium._FPDF_GetPageCount;
             const count = getPageCount(doc);
             
-            for (let i = 0; i < count; i++) {
+            if (config.tablet) {
+                // Two-Pass Approach for Uniformity
+                
+                // Pass 1: Analyze all pages to find global max content height
+                const pageBounds = new Array(count);
+                let maxContentHeight = 0;
                 const loadPage = pdfium.FPDF_LoadPage || pdfium._FPDF_LoadPage;
-                const page = loadPage(doc, i);
-                applyMarginsRaw(pdfium, page, config, i);
-                (pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage)(page);
+                const closePage = pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage;
+                const getMediaBox = pdfium.FPDFPage_GetMediaBox || pdfium._FPDFPage_GetMediaBox;
+                const floatPtrs = pdfium._malloc(16);
+                const heapF32 = getHeap(pdfium, 'HEAPF32');
+
+                for (let i = 0; i < count; i++) {
+                    const page = loadPage(doc, i);
+                    
+                    // Get Original MediaBox
+                    getMediaBox(page, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12);
+                    const L = heapF32[floatPtrs >> 2];
+                    const B = heapF32[(floatPtrs + 4) >> 2];
+                    const R = heapF32[(floatPtrs + 8) >> 2];
+                    const T = heapF32[(floatPtrs + 12) >> 2];
+
+                    const bounds = getTightContentBounds(pdfium, page, R-L, T-B, L, B, R, T);
+                    pageBounds[i] = bounds;
+
+                    if (!bounds.isEmpty) {
+                        const h = bounds.T - bounds.B;
+                        if (h > maxContentHeight) maxContentHeight = h;
+                    }
+
+                    closePage(page);
+                }
+                pdfium._free(floatPtrs);
+
+                // Calculate Uniform Dimensions
+                // If document is empty, fallback to 0 (will result in small pages or error, but unlikely)
+                if (maxContentHeight === 0) maxContentHeight = 500; // Fallback
+
+                const { width: wd, height: hd, epsilon = 0 } = config.tablet;
+                const uniformHeight = maxContentHeight + (epsilon * 2);
+                const uniformWidth = uniformHeight * (wd / hd);
+                const uniformDims = { width: uniformWidth, height: uniformHeight };
+
+                // Pass 2: Apply Margins using Uniform Dimensions
+                for (let i = 0; i < count; i++) {
+                    const page = loadPage(doc, i);
+                    applyMarginsRaw(pdfium, page, config, i, pageBounds[i], uniformDims);
+                    closePage(page);
+                }
+
+            } else {
+                // Standard Fixed Margin Mode (Single Pass)
+                for (let i = 0; i < count; i++) {
+                    const loadPage = pdfium.FPDF_LoadPage || pdfium._FPDF_LoadPage;
+                    const page = loadPage(doc, i);
+                    applyMarginsRaw(pdfium, page, config, i);
+                    (pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage)(page);
+                }
             }
             
             const res = saveViaRawAPI(pdfium, doc);
