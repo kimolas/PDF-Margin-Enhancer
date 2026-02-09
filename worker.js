@@ -124,6 +124,10 @@ const applyMarginsRaw = (pdfium, page, config, pageIndex, overrideBounds = null,
         let R = heapF32[(floatPtrs + 8) >> 2];
         let T = heapF32[(floatPtrs + 12) >> 2];
 
+        // Capture original page dimensions for relative positioning
+        const origB = B;
+        const origT = T;
+
         let newL, newR, newB, newT;
 
         if (config.tablet) {
@@ -150,14 +154,35 @@ const applyMarginsRaw = (pdfium, page, config, pageIndex, overrideBounds = null,
                 newWidth = newHeight * targetRatio;
             }
 
-            // Vertical Alignment: Center content
-            // We want the content (T-B) to be centered in newHeight
-            // Center Y of content = (T+B)/2
-            // New Top = Center Y + newHeight/2
-            // New Bottom = Center Y - newHeight/2
-            const centerY = (T + B) / 2;
-            newT = centerY + (newHeight / 2);
-            newB = centerY - (newHeight / 2);
+            // Vertical Alignment: Proportional based on original position
+            // This respects preexisting top/bottom justification (e.g. end of chapter text stays at top)
+            const contentCy = (T + B) / 2;
+            const origHeight = origT - origB;
+            const safeOrigHeight = origHeight > 0 ? origHeight : 1;
+            
+            // Calculate normalized position (0.0 = bottom, 1.0 = top)
+            const ratio = (contentCy - origB) / safeOrigHeight;
+
+            // Calculate tentative new Bottom based on ratio
+            let tentativeB = contentCy - (ratio * newHeight);
+            let tentativeT = tentativeB + newHeight;
+
+            // Clamp to ensure epsilon margins (content doesn't touch edge)
+            const minT = T + epsilon;
+            const maxB = B - epsilon;
+
+            if (tentativeT < minT) {
+                const shift = minT - tentativeT;
+                tentativeT += shift;
+                tentativeB += shift;
+            } else if (tentativeB > maxB) {
+                const shift = tentativeB - maxB;
+                tentativeB -= shift;
+                tentativeT -= shift;
+            }
+
+            newB = tentativeB;
+            newT = tentativeT;
 
             // Horizontal Alignment
             const side = config.side || 'right';
@@ -261,13 +286,13 @@ self.onmessage = async (e) => {
                 const closePage = pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage;
                 const getMediaBox = pdfium.FPDFPage_GetMediaBox || pdfium._FPDFPage_GetMediaBox;
                 const floatPtrs = pdfium._malloc(16);
-                const heapF32 = getHeap(pdfium, 'HEAPF32');
 
                 for (let i = 0; i < count; i++) {
                     const page = loadPage(doc, i);
                     
                     // Get Original MediaBox
                     getMediaBox(page, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12);
+                    const heapF32 = getHeap(pdfium, 'HEAPF32'); // Refresh view in case of memory growth
                     const L = heapF32[floatPtrs >> 2];
                     const B = heapF32[(floatPtrs + 4) >> 2];
                     const R = heapF32[(floatPtrs + 8) >> 2];
