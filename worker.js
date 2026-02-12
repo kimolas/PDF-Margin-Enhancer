@@ -279,9 +279,8 @@ self.onmessage = async (e) => {
             if (config.tablet) {
                 // Two-Pass Approach for Uniformity
                 
-                // Pass 1: Analyze all pages to find global max content height
+                // Pass 1: Analyze all pages to find content bounds
                 const pageBounds = new Array(count);
-                let maxContentHeight = 0;
                 const loadPage = pdfium.FPDF_LoadPage || pdfium._FPDF_LoadPage;
                 const closePage = pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage;
                 const getMediaBox = pdfium.FPDFPage_GetMediaBox || pdfium._FPDFPage_GetMediaBox;
@@ -301,28 +300,49 @@ self.onmessage = async (e) => {
                     const bounds = getTightContentBounds(pdfium, page, R-L, T-B, L, B, R, T);
                     pageBounds[i] = bounds;
 
-                    if (!bounds.isEmpty) {
-                        const h = bounds.T - bounds.B;
-                        if (h > maxContentHeight) maxContentHeight = h;
-                    }
-
                     closePage(page);
                 }
                 pdfium._free(floatPtrs);
 
-                // Calculate Uniform Dimensions
-                // If document is empty, fallback to 0 (will result in small pages or error, but unlikely)
-                if (maxContentHeight === 0) maxContentHeight = 500; // Fallback
+                // Calculate Typical Dimensions (Median Height)
+                const contentHeights = pageBounds
+                    .filter(b => !b.isEmpty)
+                    .map(b => b.T - b.B);
+                
+                contentHeights.sort((a, b) => a - b);
+                
+                let typicalContentHeight = 0;
+                if (contentHeights.length > 0) {
+                    const mid = Math.floor(contentHeights.length / 2);
+                    typicalContentHeight = contentHeights[mid];
+                } else {
+                    typicalContentHeight = 500; // Fallback
+                }
 
                 const { width: wd, height: hd, epsilon = 0 } = config.tablet;
-                const uniformHeight = maxContentHeight + (epsilon * 2);
-                const uniformWidth = uniformHeight * (wd / hd);
-                const uniformDims = { width: uniformWidth, height: uniformHeight };
+                const targetRatio = wd / hd;
 
-                // Pass 2: Apply Margins using Uniform Dimensions
+                // Calculate base dimensions for a "typical" page
+                const basePageHeight = typicalContentHeight + (epsilon * 2);
+                const basePageWidth = basePageHeight * targetRatio;
+
+                // Pass 2: Apply Margins using Adaptive Dimensions
                 for (let i = 0; i < count; i++) {
                     const page = loadPage(doc, i);
-                    applyMarginsRaw(pdfium, page, config, i, pageBounds[i], uniformDims);
+                    const bounds = pageBounds[i];
+                    const contentH = bounds.isEmpty ? 0 : bounds.T - bounds.B;
+                    const contentW = bounds.isEmpty ? 0 : bounds.R - bounds.L;
+
+                    // 1. Height: At least base height, but expand for long content (outliers)
+                    const pageHeight = Math.max(basePageHeight, contentH + (epsilon * 2));
+                    
+                    // 2. Width: Fixed to base width to ensure uniform zoom/font size, 
+                    // unless content is wider than the target width
+                    const pageWidth = Math.max(basePageWidth, contentW + (epsilon * 2));
+
+                    const dims = { width: pageWidth, height: pageHeight };
+
+                    applyMarginsRaw(pdfium, page, config, i, bounds, dims);
                     closePage(page);
                 }
 
