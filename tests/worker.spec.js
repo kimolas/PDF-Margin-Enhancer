@@ -172,7 +172,7 @@ test.describe('Worker Logic Unit Tests', () => {
             
             for (const objStr of objs) {
                 if (objStr.includes('/Type /Page') || objStr.includes('/Type/Page')) {
-                    const mbMatch = /\/MediaBox\s*\[\s*([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)\s*\]/.exec(objStr);
+                    const mbMatch = /\/MediaBox\s*\[\s*([-\d\.]+)\s+([-\d\.]+)\s+([-\d\.]+)\s+([-\d\.]+)\s*\]/.exec(objStr);
                     if (mbMatch) {
                         mediaBoxes.push({
                             w: parseFloat(mbMatch[3]) - parseFloat(mbMatch[1]),
