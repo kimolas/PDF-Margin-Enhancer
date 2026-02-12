@@ -228,16 +228,19 @@ test.describe('Worker Logic Unit Tests', () => {
 
         // Median Height should be 780. Base Width = 780 * 0.5 = 390.
         
-        // Small Page (Index 0): Scaled up to Base Height (780). Width 390.
-        // Content (80x80) fits in 390x780.
-        expect(outputSizes[0].h).toBeCloseTo(780, 0);
-        expect(outputSizes[0].w).toBeCloseTo(390, 0);
+        // Verify distribution of page sizes (Order is not guaranteed by PDFium SaveAsCopy)
+        
+        // 1. Small Pages (10): Scaled to Base Height (780). Width 390.
+        const smallPages = outputSizes.filter(p => Math.abs(p.w - 390) < 1 && Math.abs(p.h - 780) < 1);
+        expect(smallPages.length).toBe(10);
 
-        // Body Page (Index 15): Height 780. 
-        // Content Width 580. Base Width 390.
-        // Content Width > Base Width, so Width expands to 580.
-        expect(outputSizes[15].h).toBeCloseTo(780, 0);
-        expect(outputSizes[15].w).toBeCloseTo(580, 0);
+        // 2. Body Pages (20): Height 780. Width expands to 580 (Content Width).
+        const bodyPages = outputSizes.filter(p => Math.abs(p.w - 580) < 1 && Math.abs(p.h - 780) < 1);
+        expect(bodyPages.length).toBe(20);
+
+        // 3. Long Pages (5): Width 580. Height expands to 2980.
+        const longPages = outputSizes.filter(p => Math.abs(p.w - 580) < 1 && Math.abs(p.h - 2980) < 1);
+        expect(longPages.length).toBe(5);
     });
 
     test('Stress Test: 1000 Pages', async ({ page }) => {

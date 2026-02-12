@@ -65,7 +65,6 @@ const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR,
     const getPageObjBounds = pdfium.FPDFPageObj_GetBounds || pdfium._FPDFPageObj_GetBounds;
     const generateContent = pdfium.FPDFPage_GenerateContent || pdfium._FPDFPage_GenerateContent;
     const floatPtrs = pdfium._malloc(16);
-    const heapF32 = getHeap(pdfium, 'HEAPF32');
 
     let minL = origR, maxR = origL, minB = origT, maxT = origB;
     let foundContent = false;
@@ -75,6 +74,8 @@ const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR,
     if (generateContent) {
         generateContent(page);
     }
+
+    const heapF32 = getHeap(pdfium, 'HEAPF32');
 
     if (getPageCountObjects && getPageObject && getPageObjBounds) {
         const objCount = getPageCountObjects(page);
