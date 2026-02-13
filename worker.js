@@ -59,58 +59,60 @@ const initPdfium = async () => {
     throw new Error("No PDFium module found.");
 };
 
-const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR, origT) => {
+const getTightContentBounds = (pdfium, page, origL, origB, origR, origT, bitmapBuffer, maxBitmapDim) => {
     // --- CONFIGURATION ---
-    const TARGET_DIM = 2000; // Target dimension for rendering (balance speed/accuracy)
     const THRESHOLD = 250;   // 0-255. Pixels lighter than this are considered "white".
     // ---------------------
 
-    // Normalize dimensions
-    width = Math.abs(width);
-    height = Math.abs(height);
+    // Normalize coordinates to ensure positive width/height and correct origin
+    const normL = Math.min(origL, origR);
+    const normR = Math.max(origL, origR);
+    const normB = Math.min(origB, origT);
+    const normT = Math.max(origB, origT);
+    const normW = normR - normL;
+    const normH = normT - normB;
 
-    // Calculate Scale to hit TARGET_DIM (handles both huge pages and tiny inch-unit pages)
-    const maxDim = Math.max(width, height);
+    // Calculate Scale to fit within maxBitmapDim (handles both huge pages and tiny inch-unit pages)
+    const maxDim = Math.max(normW, normH);
     let SCALE = 1.0;
     if (maxDim > 0) {
-        SCALE = TARGET_DIM / maxDim;
+        SCALE = maxBitmapDim / maxDim;
     }
 
     // Ensure integer dimensions for the bitmap
-    const bmWidth = Math.ceil(width * SCALE);
-    const bmHeight = Math.ceil(height * SCALE);
+    const bmWidth = Math.ceil(normW * SCALE);
+    const bmHeight = Math.ceil(normH * SCALE);
+
+    if (bmWidth <= 0 || bmHeight <= 0) {
+        return { L: origL, B: origB, R: origR, T: origT, isEmpty: true };
+    }
 
     // PDFium Rendering Functions
-    const createBitmap = pdfium.FPDFBitmap_Create || pdfium._FPDFBitmap_Create;
+    const createBitmapEx = pdfium.FPDFBitmap_CreateEx || pdfium._FPDFBitmap_CreateEx;
     const fillRect = pdfium.FPDFBitmap_FillRect || pdfium._FPDFBitmap_FillRect;
     const renderPageBitmap = pdfium.FPDF_RenderPageBitmap || pdfium._FPDF_RenderPageBitmap;
-    const getBuffer = pdfium.FPDFBitmap_GetBuffer || pdfium._FPDFBitmap_GetBuffer;
     const getStride = pdfium.FPDFBitmap_GetStride || pdfium._FPDFBitmap_GetStride;
     const destroyBitmap = pdfium.FPDFBitmap_Destroy || pdfium._FPDFBitmap_Destroy;
 
-    // Safety check for rendering availability
-    if (!createBitmap || !renderPageBitmap) {
-        // Fallback if render functions aren't available (unlikely)
-        return { L: origL, B: origB, R: origR, T: origT, isEmpty: false };
-    }
-
-    // 1. Create Bitmap (Format 4 = BGRA usually)
-    const bitmap = createBitmap(bmWidth, bmHeight, 0);
+    // 1. Create Bitmap wrapping our pre-allocated buffer
+    // Format 4 = BGRA. Stride = width * 4 bytes.
+    const stride = bmWidth * 4;
+    const bitmap = createBitmapEx(bmWidth, bmHeight, 4, bitmapBuffer, stride);
+    
     if (!bitmap) {
-        // Allocation failed (likely OOM or invalid dims), return original bounds
-        return { L: origL, B: origB, R: origR, T: origT, isEmpty: false };
+        throw new Error(`Failed to create bitmap (${bmWidth}x${bmHeight})`);
     }
 
     // 2. Fill with White Background (0xFFFFFFFF) to ensure transparency doesn't look "black"
-    if (fillRect) fillRect(bitmap, 0, 0, bmWidth, bmHeight, 0xFFFFFFFF);
+    fillRect(bitmap, 0, 0, bmWidth, bmHeight, 0xFFFFFFFF);
 
     // 3. Render Page content into the bitmap
     // Flags: 0x10 (Printing/High Quality) | 0x01 (Annotations)
     renderPageBitmap(bitmap, page, 0, 0, bmWidth, bmHeight, 0, 0x10);
 
     // 4. Get direct access to pixel data
-    const ptr = getBuffer(bitmap);
-    const stride = getStride(bitmap); // Number of bytes per row
+    // We use our pre-allocated buffer pointer directly
+    const ptr = bitmapBuffer >>> 0; 
     const heapU8 = getHeap(pdfium, 'HEAPU8');
 
     let minX = bmWidth, maxX = -1;
@@ -170,7 +172,7 @@ const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR,
     }
 
     // 6. Cleanup Memory
-    destroyBitmap(bitmap);
+    destroyBitmap(bitmap); // Destroys the struct, but leaves our buffer intact for reuse
 
     // 7. Handle Empty Page
     if (minY === -1) {
@@ -183,32 +185,53 @@ const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR,
     // Note: Bitmap (0,0) is Top-Left. PDF (L,B) is typically Bottom-Left.
     
     // X axis (Left to Right)
-    const newL = origL + (minX / SCALE);
-    const newR = origL + ((maxX + 1) / SCALE); // +1 to capture the full pixel width
+    const newL = normL + (minX / SCALE);
+    const newR = normL + ((maxX + 1) / SCALE); // +1 to capture the full pixel width
 
     // Y axis (Top to Bottom in Bitmap -> Top to Bottom in PDF Space)
     // origT corresponds to y=0.
-    const newT = origT - (minY / SCALE);
-    const newB = origT - ((maxY + 1) / SCALE);
+    const newT = normT - (minY / SCALE);
+    const newB = normT - ((maxY + 1) / SCALE);
 
     return { L: newL, B: newB, R: newR, T: newT, isEmpty: false };
 };
 
-const applyMarginsRaw = (pdfium, page, config, pageIndex, overrideBounds = null, uniformDims = null) => {
+const getPageBox = (pdfium, page, floatPtrs) => {
     const getMediaBox = pdfium.FPDFPage_GetMediaBox || pdfium._FPDFPage_GetMediaBox;
+    const getCropBox = pdfium.FPDFPage_GetCropBox || pdfium._FPDFPage_GetCropBox;
+    const getPageWidth = pdfium.FPDF_GetPageWidth || pdfium._FPDF_GetPageWidth;
+    const getPageHeight = pdfium.FPDF_GetPageHeight || pdfium._FPDF_GetPageHeight;
+
+    let box = null;
+    // Try MediaBox first, then CropBox as fallback
+    if (getMediaBox(page, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12) ||
+        getCropBox(page, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12)) {
+        
+        const heapF32 = getHeap(pdfium, 'HEAPF32');
+        box = {
+            L: heapF32[floatPtrs >>> 2],
+            B: heapF32[(floatPtrs + 4) >>> 2],
+            R: heapF32[(floatPtrs + 8) >>> 2],
+            T: heapF32[(floatPtrs + 12) >>> 2]
+        };
+    } else if (getPageWidth && getPageHeight) {
+        // Fallback: Use high-level API if raw box retrieval fails
+        const w = getPageWidth(page);
+        const h = getPageHeight(page);
+        if (w > 0 && h > 0) {
+            box = { L: 0, B: 0, R: w, T: h };
+        }
+    }
+    return box;
+};
+
+const applyMarginsRaw = (pdfium, page, config, pageIndex, floatPtrs, overrideBounds = null, uniformDims = null) => {
     const setMediaBox = pdfium.FPDFPage_SetMediaBox || pdfium._FPDFPage_SetMediaBox;
     const setCropBox = pdfium.FPDFPage_SetCropBox || pdfium._FPDFPage_SetCropBox;
 
-    const floatPtrs = pdfium._malloc(16);
-    const success = getMediaBox(page, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12);
-    
-    if (success) {
-        const heapF32 = getHeap(pdfium, 'HEAPF32');
-        let L = heapF32[floatPtrs >> 2];
-        let B = heapF32[(floatPtrs + 4) >> 2];
-        let R = heapF32[(floatPtrs + 8) >> 2];
-        let T = heapF32[(floatPtrs + 12) >> 2];
-
+    let box = getPageBox(pdfium, page, floatPtrs);
+    if (box) {
+        let { L, B, R, T } = box;
         // Capture original page dimensions for relative positioning
         const origB = B;
         const origT = T;
@@ -294,18 +317,23 @@ const applyMarginsRaw = (pdfium, page, config, pageIndex, overrideBounds = null,
             newR = applyRight ? R + marginSize : R;
         }
 
-        setMediaBox(page, newL, newB, newR, newT);
-        if (setCropBox) setCropBox(page, newL, newB, newR, newT);
-    }
+        // Validate coordinates to prevent corrupt PDF (NaN/Infinity/Huge)
+        const isValid = (v) => Number.isFinite(v) && Math.abs(v) < 1e7;
 
-    pdfium._free(floatPtrs);
+        if (isValid(newL) && isValid(newB) && isValid(newR) && isValid(newT)) {
+            setMediaBox(page, newL, newB, newR, newT);
+            if (setCropBox) setCropBox(page, newL, newB, newR, newT);
+        }
+    }
 };
 
 const saveViaRawAPI = (pdfium, doc) => {
     const dataChunks = [];
     const writeBlock = (pThis, pData, size) => {
         const heapU8 = getHeap(pdfium, 'HEAPU8');
-        const chunk = heapU8.slice(pData, pData + size);
+        // Ensure pData is treated as unsigned for large memory offsets
+        const start = pData >>> 0;
+        const chunk = heapU8.slice(start, start + size);
         dataChunks.push(chunk);
         return 1;
     };
@@ -316,8 +344,9 @@ const saveViaRawAPI = (pdfium, doc) => {
     const fileWritePtr = pdfium._malloc(8);
     const heap32 = getHeap(pdfium, 'HEAP32');
     
-    heap32[fileWritePtr >> 2] = 1;
-    heap32[(fileWritePtr + 4) >> 2] = writeBlockPtr;
+    // Use unsigned shift to handle potential large pointers safely
+    heap32[fileWritePtr >>> 2] = 1;
+    heap32[(fileWritePtr + 4) >>> 2] = writeBlockPtr;
 
     const saveFunc = pdfium.FPDF_SaveAsCopy || pdfium._FPDF_SaveAsCopy;
     const success = saveFunc(doc, fileWritePtr, 0);
@@ -344,10 +373,23 @@ self.onmessage = async (e) => {
         const pdfium = await initPdfium();
         const inputData = new Uint8Array(data);
 
+        // Sanitize configuration to ensure numbers (prevents string concatenation bugs)
+        if (config.tablet) {
+            config.tablet.width = parseFloat(config.tablet.width);
+            config.tablet.height = parseFloat(config.tablet.height);
+            config.tablet.epsilon = parseFloat(config.tablet.epsilon || 0);
+
+            // Validate dimensions to prevent Infinity/NaN
+            if (!Number.isFinite(config.tablet.width) || config.tablet.width <= 0) config.tablet.width = 1000;
+            if (!Number.isFinite(config.tablet.height) || config.tablet.height <= 0) config.tablet.height = 1000;
+            if (!Number.isFinite(config.tablet.epsilon)) config.tablet.epsilon = 0;
+        }
+        if (config.marginSize) config.marginSize = parseFloat(config.marginSize) || 0;
+
         const loadDoc = (bytes) => {
             const ptr = pdfium._malloc(bytes.length);
             const heapU8 = getHeap(pdfium, 'HEAPU8');
-            heapU8.set(bytes, ptr);
+            heapU8.set(bytes, ptr >>> 0);
             
             const loader = pdfium.FPDF_LoadMemDocument || pdfium._FPDF_LoadMemDocument;
             const doc = loader(ptr, bytes.length, 0); 
@@ -361,6 +403,17 @@ self.onmessage = async (e) => {
             const getPageCount = pdfium.FPDF_GetPageCount || pdfium._FPDF_GetPageCount;
             const count = getPageCount(doc);
             
+            // Pre-allocate buffer for page box retrieval to prevent heap fragmentation
+            const floatPtrs = pdfium._malloc(16);
+            if (!floatPtrs) throw new Error("Failed to allocate memory for page processing.");
+
+            // Pre-allocate a single large bitmap buffer to reuse for all pages
+            // Align to 16 bytes to prevent SIMD crashes in PDFium
+            const MAX_BITMAP_DIM = 1000;
+            const BITMAP_BUFFER_SIZE = (MAX_BITMAP_DIM * MAX_BITMAP_DIM * 4) + 16; 
+            const rawBitmapBuffer = pdfium._malloc(BITMAP_BUFFER_SIZE);
+            const bitmapBuffer = (rawBitmapBuffer + 15) & ~15; // Align pointer
+
             if (config.tablet) {
                 // Two-Pass Approach for Uniformity
                 
@@ -368,25 +421,21 @@ self.onmessage = async (e) => {
                 const pageBounds = new Array(count);
                 const loadPage = pdfium.FPDF_LoadPage || pdfium._FPDF_LoadPage;
                 const closePage = pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage;
-                const getMediaBox = pdfium.FPDFPage_GetMediaBox || pdfium._FPDFPage_GetMediaBox;
 
                 for (let i = 0; i < count; i++) {
-                    const floatPtrs = pdfium._malloc(16);
                     const page = loadPage(doc, i);
-                    
-                    // Get Original MediaBox
-                    getMediaBox(page, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12);
-                    const heapF32 = getHeap(pdfium, 'HEAPF32'); // Refresh view in case of memory growth
-                    const L = heapF32[floatPtrs >> 2];
-                    const B = heapF32[(floatPtrs + 4) >> 2];
-                    const R = heapF32[(floatPtrs + 8) >> 2];
-                    const T = heapF32[(floatPtrs + 12) >> 2];
-
-                    const bounds = getTightContentBounds(pdfium, page, R-L, T-B, L, B, R, T);
-                    pageBounds[i] = bounds;
-
-                    pdfium._free(floatPtrs);
-                    closePage(page);
+                    if (page) {
+                        const box = getPageBox(pdfium, page, floatPtrs);
+                        if (box) {
+                            pageBounds[i] = getTightContentBounds(pdfium, page, box.L, box.B, box.R, box.T, bitmapBuffer, MAX_BITMAP_DIM);
+                        } else {
+                            pageBounds[i] = { isEmpty: true, L:0, B:0, R:0, T:0 }; // Fallback
+                        }
+                        closePage(page);
+                    } else {
+                        console.warn(`Failed to load page ${i}`);
+                        pageBounds[i] = { isEmpty: true, L:0, B:0, R:0, T:0 };
+                    }
                 }
 
                 // Calculate Typical Dimensions (Median Height)
@@ -404,10 +453,10 @@ self.onmessage = async (e) => {
                     typicalContentHeight = 500; // Fallback
                 }
 
-                const { width: wd, height: hd, epsilon: rawEpsilon = 0 } = config.tablet;
+                // Config is already sanitized above
+                let { width: wd, height: hd, epsilon } = config.tablet;
                 
                 // Heuristic: If page is in points (>200) but epsilon is small (<5), assume inches and convert.
-                let epsilon = rawEpsilon;
                 if (typicalContentHeight > 200 && epsilon > 0 && epsilon < 5) {
                     epsilon *= 72;
                 }
@@ -421,21 +470,23 @@ self.onmessage = async (e) => {
                 // Pass 2: Apply Margins using Adaptive Dimensions
                 for (let i = 0; i < count; i++) {
                     const page = loadPage(doc, i);
-                    const bounds = pageBounds[i];
-                    const contentH = bounds.isEmpty ? 0 : bounds.T - bounds.B;
-                    const contentW = bounds.isEmpty ? 0 : bounds.R - bounds.L;
+                    if (page) {
+                        const bounds = pageBounds[i];
+                        const contentH = bounds.isEmpty ? 0 : bounds.T - bounds.B;
+                        const contentW = bounds.isEmpty ? 0 : bounds.R - bounds.L;
 
-                    // 1. Height: At least base height, but expand for long content (outliers)
-                    const pageHeight = Math.max(basePageHeight, contentH + (epsilon * 2));
-                    
-                    // 2. Width: Fixed to base width to ensure uniform zoom/font size, 
-                    // unless content is wider than the target width
-                    const pageWidth = Math.max(basePageWidth, contentW + (epsilon * 2));
+                        // 1. Height: At least base height, but expand for long content (outliers)
+                        const pageHeight = Math.max(basePageHeight, contentH + (epsilon * 2));
+                        
+                        // 2. Width: Fixed to base width to ensure uniform zoom/font size, 
+                        // unless content is wider than the target width
+                        const pageWidth = Math.max(basePageWidth, contentW + (epsilon * 2));
 
-                    const dims = { width: pageWidth, height: pageHeight };
+                        const dims = { width: pageWidth, height: pageHeight };
 
-                    applyMarginsRaw(pdfium, page, config, i, bounds, dims);
-                    closePage(page);
+                        applyMarginsRaw(pdfium, page, config, i, floatPtrs, bounds, dims);
+                        closePage(page);
+                    }
                 }
 
             } else {
@@ -443,10 +494,15 @@ self.onmessage = async (e) => {
                 for (let i = 0; i < count; i++) {
                     const loadPage = pdfium.FPDF_LoadPage || pdfium._FPDF_LoadPage;
                     const page = loadPage(doc, i);
-                    applyMarginsRaw(pdfium, page, config, i);
-                    (pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage)(page);
+                    if (page) {
+                        applyMarginsRaw(pdfium, page, config, i, floatPtrs);
+                        (pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage)(page);
+                    }
                 }
             }
+
+            pdfium._free(floatPtrs);
+            pdfium._free(rawBitmapBuffer);
             
             const res = saveViaRawAPI(pdfium, doc);
             (pdfium.FPDF_CloseDocument || pdfium._FPDF_CloseDocument)(doc);

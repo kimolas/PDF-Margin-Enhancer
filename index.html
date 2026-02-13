@@ -180,6 +180,10 @@
             <button id="enhanceBtn" disabled class="flex-1 py-3.5 px-4 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-600 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-all shadow-lg shadow-slate-200 dark:shadow-none flex items-center justify-center transform active:scale-[0.98]">
                 <span>Download Enhanced PDF</span>
             </button>
+            <button id="shareBtn" class="hidden flex-1 py-3.5 px-4 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/20 dark:hover:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 font-bold rounded-xl border border-indigo-100 dark:border-indigo-900/50 transition-all shadow-sm flex items-center justify-center gap-2 transform active:scale-[0.98]">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
+                <span>Share to Kindle</span>
+            </button>
             <button id="cancelBtn" type="button" class="hidden px-6 py-3.5 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 font-bold rounded-xl border border-red-100 dark:border-red-900/50 hover:bg-red-100 dark:hover:bg-red-900/40 transition-all shadow-sm">Cancel</button>
         </div>
 
@@ -223,6 +227,7 @@
         const fileInput = document.getElementById('fileInput');
         const fileNameDisp = document.getElementById('fileName');
         const enhanceBtn = document.getElementById('enhanceBtn');
+        const shareBtn = document.getElementById('shareBtn');
         const cancelBtn = document.getElementById('cancelBtn');
         const log = document.getElementById('log');
         const configSection = document.getElementById('configSection');
@@ -253,6 +258,8 @@
         let currentSide = 'right';
         let currentMode = 'tablet'; // Default to tablet
         let batchResults = [];
+        let lastResult = null;
+        let isFinished = false;
 
         const sideDescriptions = {
             'right': 'Standard for digital reading or single-sided print.',
@@ -530,11 +537,14 @@
         function resetUI() {
             enhanceBtn.disabled = false;
             enhanceBtn.querySelector('span').textContent = 'Download Enhanced PDF';
+            shareBtn.classList.add('hidden');
             document.getElementById('progressContainer').classList.add('hidden');
             cancelBtn.classList.add('hidden');
             processQueue = [];
             batchResults = [];
+            lastResult = null;
             processingActive = false;
+            isFinished = false;
             renderFileList();
         }
 
@@ -673,6 +683,11 @@
             if (jobsCompleted >= processQueue.length) {
                 addLog('Batch processing complete.');
                 
+                // Store result for sharing if single file
+                if (batchResults.length === 1) {
+                    lastResult = batchResults[0];
+                }
+
                 if (batchResults.length === 1) {
                     downloadFile(batchResults[0].data, batchResults[0].name);
                 } else if (batchResults.length > 1) {
@@ -695,6 +710,28 @@
                 }
 
                 resetUI();
+                // Check if we can share (Single file + Browser support)
+                let canShare = false;
+                if (lastResult && navigator.share && navigator.canShare) {
+                    try {
+                        const file = new File([lastResult.data], lastResult.name, { type: 'application/pdf' });
+                        if (navigator.canShare({ files: [file] })) canShare = true;
+                    } catch (e) { console.log('Share check failed', e); }
+                }
+
+                if (canShare) {
+                    // Pause in "Finished" state to allow sharing
+                    shareBtn.classList.remove('hidden');
+                    enhanceBtn.disabled = false;
+                    enhanceBtn.querySelector('span').textContent = 'Start New Batch';
+                    document.getElementById('progressContainer').classList.add('hidden');
+                    cancelBtn.classList.add('hidden');
+                    processingActive = false;
+                    isFinished = true;
+                    addLog('Tip: Use "Share to Kindle" to send to your device.');
+                } else {
+                    resetUI();
+                }
             } else {
                 processNextJob(workerObj);
             }
@@ -715,6 +752,11 @@
         };
 
         enhanceBtn.onclick = () => {
+            if (isFinished) {
+                resetUI();
+                return;
+            }
+
             if (processQueue.length === 0) return;
             
             enhanceBtn.disabled = true;
@@ -735,6 +777,21 @@
             });
             
             addLog(`Starting batch with ${processQueue.length} files...`);
+        };
+
+        shareBtn.onclick = async () => {
+            if (!lastResult) return;
+            try {
+                const file = new File([lastResult.data], lastResult.name, { type: 'application/pdf' });
+                await navigator.share({
+                    files: [file],
+                    title: 'Enhanced PDF',
+                    text: 'Here is your enhanced PDF for Kindle.'
+                });
+                addLog('Shared successfully.');
+            } catch (err) {
+                addLog(`Share failed: ${err.message}`, true);
+            }
         };
 
         initWorkerPool();

@@ -342,4 +342,28 @@ test.describe('Worker Logic Unit Tests', () => {
         const outputLight = await processPdfInWorker(page, pdfLight, config);
         expect(outputLight[0].w).toBeCloseTo(200, 1);
     });
+
+    test('Invalid Config: Should handle zero/NaN dimensions gracefully', async ({ page }) => {
+        await page.goto('/');
+        const inputSizes = [{ w: 600, h: 800 }];
+        const pdfData = createPDF(inputSizes);
+        
+        // Invalid width '0' -> would cause Infinity ratio if not handled
+        const config = { tablet: { width: 0, height: 1000, epsilon: 0 } };
+
+        const outputSizes = await processPdfInWorker(page, pdfData, config);
+        
+        // Should fallback to default 1000 or similar, producing valid PDF (length 1 means regex found valid MediaBox)
+        expect(outputSizes.length).toBe(1);
+        expect(outputSizes[0].w).toBeGreaterThan(0);
+    });
+
+    test('Error Handling: Should return error for invalid/garbage PDF data', async ({ page }) => {
+        await page.goto('/');
+        const garbageData = new Uint8Array([0, 1, 2, 3, 4, 5]); // Not a PDF
+        const config = { tablet: { width: 1000, height: 1000, epsilon: 0 } };
+
+        // Expect the worker to catch the load failure and return an ERROR message
+        await expect(processPdfInWorker(page, garbageData, config)).rejects.toMatch(/FPDF_LoadMemDocument failed/);
+    });
 });
