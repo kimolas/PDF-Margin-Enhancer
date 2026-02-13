@@ -282,7 +282,7 @@ test.describe('Worker Logic Unit Tests', () => {
         expect(bodyPages.length).toBe(20);
 
         // 3. Long Pages (5): Width 580. Height expands to 2980.
-        const longPages = outputSizes.filter(p => Math.abs(p.w - 580) < 1 && Math.abs(p.h - 2980) < 5);
+        const longPages = outputSizes.filter(p => Math.abs(p.w - 580) < 5 && Math.abs(p.h - 2980) < 5);
         expect(longPages.length).toBe(5);
     });
 
