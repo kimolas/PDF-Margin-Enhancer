@@ -61,10 +61,21 @@ const initPdfium = async () => {
 
 const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR, origT) => {
     // --- CONFIGURATION ---
-    const SCALE = 1.0;       // Optimized: 1.0 is sufficient for margin detection (was 2.0)
+    let SCALE = 1.0;         // Optimized: 1.0 is sufficient for margin detection (was 2.0)
     const THRESHOLD = 250;   // 0-255. Pixels lighter than this are considered "white". 
                              // 250 filters out compression noise while keeping light content.
+    const MAX_DIM = 4000;    // Cap rendering size to prevent OOM/Hangs on huge pages
     // ---------------------
+
+    // Normalize dimensions
+    width = Math.abs(width);
+    height = Math.abs(height);
+
+    // Downscale if too large
+    if (width > MAX_DIM || height > MAX_DIM) {
+        const ratio = Math.min(MAX_DIM / width, MAX_DIM / height);
+        SCALE = ratio;
+    }
 
     // Ensure integer dimensions for the bitmap
     const bmWidth = Math.ceil(width * SCALE);
@@ -86,6 +97,10 @@ const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR,
 
     // 1. Create Bitmap (Format 4 = BGRA usually)
     const bitmap = createBitmap(bmWidth, bmHeight, 0);
+    if (!bitmap) {
+        // Allocation failed (likely OOM or invalid dims), return original bounds
+        return { L: origL, B: origB, R: origR, T: origT, isEmpty: false };
+    }
 
     // 2. Fill with White Background (0xFFFFFFFF) to ensure transparency doesn't look "black"
     if (fillRect) fillRect(bitmap, 0, 0, bmWidth, bmHeight, 0xFFFFFFFF);
