@@ -287,6 +287,155 @@ const applyMarginsRaw = (pdfium, page, config, pageIndex, overrideBounds = null,
     pdfium._free(floatPtrs);
 };
 
+const drawBlock = (pdfium, page, blockBox, hexColor) => {
+    const createPath = pdfium.FPDF_CreateNewPath || pdfium._FPDF_CreateNewPath;
+    if (!createPath) {
+        console.error('FPDF_CreateNewPath not found. Available keys:', Object.keys(pdfium));
+        return;
+    }
+
+    const parseColor = (hex) => {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return { r, g, b, a: 50 }; // Using a fixed alpha for transparency
+    };
+    const color = parseColor(hexColor);
+
+    const path = createPath();
+    (pdfium.FPDFPath_MoveTo || pdfium._FPDFPath_MoveTo)(path, blockBox.L - 5, blockBox.B - 5);
+    (pdfium.FPDFPath_LineTo || pdfium._FPDFPath_LineTo)(path, blockBox.R + 5, blockBox.B - 5);
+    (pdfium.FPDFPath_LineTo || pdfium._FPDFPath_LineTo)(path, blockBox.R + 5, blockBox.T + 5);
+    (pdfium.FPDFPath_LineTo || pdfium._FPDFPath_LineTo)(path, blockBox.L - 5, blockBox.T + 5);
+    (pdfium.FPDFPath_Close || pdfium._FPDFPath_Close)(path);
+
+    const pageObject = (pdfium.FPDFPageObj_NewPath || pdfium._FPDFPageObj_NewPath)(path);
+
+    (pdfium.FPDFPageObj_SetFillColor || pdfium._FPDFPageObj_SetFillColor)(pageObject, color.r, color.g, color.b, color.a);
+    (pdfium.FPDFPage_InsertObject || pdfium._FPDFPage_InsertObject)(page, 0, pageObject);
+
+    (pdfium.FPDF_GenerateContent || pdfium._FPDF_GenerateContent)(page);
+};
+
+const findTheoremBlocks = (chars, config) => {
+    const { keywords } = config;
+    const blocks = [];
+
+    // 1. Group characters into lines
+    const lines = [];
+    if (chars.length > 0) {
+        let currentLine = { text: '', box: { ...chars[0].box }, chars: [chars[0]], pageIndex: chars[0].pageIndex };
+        for (let i = 1; i < chars.length; i++) {
+            const char = chars[i];
+            const charCenterY = (char.box.T + char.box.B) / 2;
+            if (char.pageIndex !== currentLine.pageIndex || charCenterY > currentLine.box.T || charCenterY < currentLine.box.B) {
+                lines.push(currentLine);
+                currentLine = { text: '', box: { ...char.box }, chars: [char], pageIndex: char.pageIndex };
+            }
+            
+            currentLine.text += char.char;
+            currentLine.chars.push(char);
+            currentLine.box.L = Math.min(currentLine.box.L, char.box.L);
+            currentLine.box.B = Math.min(currentLine.box.B, char.box.B);
+            currentLine.box.R = Math.max(currentLine.box.R, char.box.R);
+            currentLine.box.T = Math.max(currentLine.box.T, char.box.T);
+        }
+        lines.push(currentLine);
+    }
+    
+    // 2. Find keyword occurrences in lines
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const keyword of keywords) {
+            if (line.text.trim().startsWith(keyword)) {
+
+                // 3. Keyword found, now identify the block.
+                let blockLines = [line];
+                
+                // Scan downwards
+                for (let j = i + 1; j < lines.length; j++) {
+                    const nextLine = lines[j];
+                    const prevLine = blockLines[blockLines.length - 1];
+                    const verticalGap = prevLine.box.B - nextLine.box.T;
+                    const lastLineHeight = prevLine.box.T - prevLine.box.B;
+
+                    if (prevLine.pageIndex !== nextLine.pageIndex) {
+                        // If we are on a new page, we are more lenient with the vertical gap
+                         if (Math.abs(nextLine.box.L - line.box.L) > 20) {
+                            break;
+                        }
+                    } else {
+                        if (verticalGap > lastLineHeight * 1.5 || Math.abs(nextLine.box.L - line.box.L) > 20) {
+                            break;
+                        }
+                    }
+
+                    blockLines.push(nextLine);
+                }
+
+                // 4. Group lines by page and create blocks
+                const pageBlocks = {};
+                for(const blockLine of blockLines) {
+                    if (!pageBlocks[blockLine.pageIndex]) {
+                        pageBlocks[blockLine.pageIndex] = {
+                            pageIndex: blockLine.pageIndex,
+                            L: blockLine.box.L,
+                            B: blockLine.box.B,
+                            R: blockLine.box.R,
+                            T: blockLine.box.T,
+                        }
+                    } else {
+                        pageBlocks[blockLine.pageIndex].L = Math.min(pageBlocks[blockLine.pageIndex].L, blockLine.box.L);
+                        pageBlocks[blockLine.pageIndex].B = Math.min(pageBlocks[blockLine.pageIndex].B, blockLine.box.B);
+                        pageBlocks[blockLine.pageIndex].R = Math.max(pageBlocks[blockLine.pageIndex].R, blockLine.box.R);
+                        pageBlocks[blockLine.pageIndex].T = Math.max(pageBlocks[blockLine.pageIndex].T, blockLine.box.T);
+                    }
+                }
+                
+                blocks.push(...Object.values(pageBlocks));
+
+                // Skip the lines that are now part of this block
+                i += blockLines.length - 1;
+                break; 
+            }
+        }
+    }
+    return blocks;
+};
+
+const extractText = (pdfium, page) => {
+    const textPage = (pdfium.FPDFText_LoadPage || pdfium._FPDFText_LoadPage)(page);
+    const count = (pdfium.FPDFText_CountChars || pdfium._FPDFText_CountChars)(textPage);
+    const chars = [];
+    const floatPtrs = pdfium._malloc(16);
+    const heapF32 = getHeap(pdfium, 'HEAPF32');
+
+    for (let i = 0; i < count; i++) {
+        const charCode = (pdfium.FPDFText_GetUnicode || pdfium._FPDFText_GetUnicode)(textPage, i);
+        const success = (pdfium.FPDFText_GetCharBox || pdfium._FPDFText_GetCharBox)(textPage, i, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12);
+        
+        if (success) {
+            const L = heapF32[floatPtrs >> 2];
+            const B = heapF32[(floatPtrs + 4) >> 2];
+            const R = heapF32[(floatPtrs + 8) >> 2];
+            const T = heapF32[(floatPtrs + 12) >> 2];
+            chars.push({
+                char: String.fromCharCode(charCode),
+                box: { L, B, R, T }
+            });
+        } else {
+             chars.push({
+                char: String.fromCharCode(charCode),
+                box: null
+            });
+        }
+    }
+    
+    pdfium._free(floatPtrs);
+    (pdfium.FPDFText_ClosePage || pdfium._FPDFText_ClosePage)(textPage);
+    return chars;
+};
+
 const saveViaRawAPI = (pdfium, doc) => {
     const dataChunks = [];
     const writeBlock = (pThis, pData, size) => {
@@ -346,23 +495,40 @@ self.onmessage = async (e) => {
 
             const getPageCount = pdfium.FPDF_GetPageCount || pdfium._FPDF_GetPageCount;
             const count = getPageCount(doc);
+            const loadPage = pdfium.FPDF_LoadPage || pdfium._FPDF_LoadPage;
+            const closePage = pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage;
+
+            // First pass: Extract all characters from all pages
+            const allChars = [];
+            if (config.theoremDetection && config.theoremDetection.drawBoxes && config.theoremDetection.keywords.length > 0) {
+                for (let i = 0; i < count; i++) {
+                    const page = loadPage(doc, i);
+                    const chars = extractText(pdfium, page);
+                    chars.forEach(c => { 
+                        if(c.box) c.pageIndex = i;
+                    });
+                    allChars.push(...chars.filter(c => c.box));
+                    closePage(page);
+                }
+            }
             
+            // Find all theorem blocks across the entire document
+            const theoremBlocks = findTheoremBlocks(allChars, config.theoremDetection);
+
             if (config.tablet) {
                 // Two-Pass Approach for Uniformity
                 
                 // Pass 1: Analyze all pages to find content bounds
                 const pageBounds = new Array(count);
-                const loadPage = pdfium.FPDF_LoadPage || pdfium._FPDF_LoadPage;
-                const closePage = pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage;
+                
                 const getMediaBox = pdfium.FPDFPage_GetMediaBox || pdfium._FPDFPage_GetMediaBox;
 
                 for (let i = 0; i < count; i++) {
                     const floatPtrs = pdfium._malloc(16);
                     const page = loadPage(doc, i);
                     
-                    // Get Original MediaBox
                     getMediaBox(page, floatPtrs, floatPtrs + 4, floatPtrs + 8, floatPtrs + 12);
-                    const heapF32 = getHeap(pdfium, 'HEAPF32'); // Refresh view in case of memory growth
+                    const heapF32 = getHeap(pdfium, 'HEAPF32');
                     const L = heapF32[floatPtrs >> 2];
                     const B = heapF32[(floatPtrs + 4) >> 2];
                     const R = heapF32[(floatPtrs + 8) >> 2];
@@ -375,55 +541,51 @@ self.onmessage = async (e) => {
                     closePage(page);
                 }
 
-                // Calculate Typical Dimensions (Median Height)
-                const contentHeights = pageBounds
-                    .filter(b => !b.isEmpty)
-                    .map(b => b.T - b.B);
-                
+                // Calculate Typical Dimensions
+                const contentHeights = pageBounds.filter(b => !b.isEmpty).map(b => b.T - b.B);
                 contentHeights.sort((a, b) => a - b);
+                const typicalContentHeight = contentHeights.length > 0 ? contentHeights[Math.floor(contentHeights.length / 2)] : 500;
                 
-                let typicalContentHeight = 0;
-                if (contentHeights.length > 0) {
-                    const mid = Math.floor(contentHeights.length / 2);
-                    typicalContentHeight = contentHeights[mid];
-                } else {
-                    typicalContentHeight = 500; // Fallback
-                }
-
                 const { width: wd, height: hd, epsilon = 0 } = config.tablet;
                 const targetRatio = wd / hd;
-
-                // Calculate base dimensions for a "typical" page
                 const basePageHeight = typicalContentHeight + (epsilon * 2);
                 const basePageWidth = basePageHeight * targetRatio;
 
-                // Pass 2: Apply Margins using Adaptive Dimensions
+                // Pass 2: Apply Margins and Draw Blocks
                 for (let i = 0; i < count; i++) {
                     const page = loadPage(doc, i);
                     const bounds = pageBounds[i];
                     const contentH = bounds.isEmpty ? 0 : bounds.T - bounds.B;
                     const contentW = bounds.isEmpty ? 0 : bounds.R - bounds.L;
 
-                    // 1. Height: At least base height, but expand for long content (outliers)
                     const pageHeight = Math.max(basePageHeight, contentH + (epsilon * 2));
-                    
-                    // 2. Width: Fixed to base width to ensure uniform zoom/font size, 
-                    // unless content is wider than the target width
                     const pageWidth = Math.max(basePageWidth, contentW + (epsilon * 2));
-
                     const dims = { width: pageWidth, height: pageHeight };
 
                     applyMarginsRaw(pdfium, page, config, i, bounds, dims);
+
+                    for (const block of theoremBlocks) {
+                        if (block.pageIndex === i) {
+                            drawBlock(pdfium, page, block, config.theoremDetection.highlightColor);
+                        }
+                    }
+
                     closePage(page);
                 }
 
             } else {
-                // Standard Fixed Margin Mode (Single Pass)
+                // Standard Fixed Margin Mode
                 for (let i = 0; i < count; i++) {
-                    const loadPage = pdfium.FPDF_LoadPage || pdfium._FPDF_LoadPage;
                     const page = loadPage(doc, i);
+                    
+                    for (const block of theoremBlocks) {
+                        if (block.pageIndex === i) {
+                           drawBlock(pdfium, page, block, config.theoremDetection.highlightColor);
+                        }
+                    }
+
                     applyMarginsRaw(pdfium, page, config, i);
-                    (pdfium.FPDF_ClosePage || pdfium._FPDF_ClosePage)(page);
+                    closePage(page);
                 }
             }
             
