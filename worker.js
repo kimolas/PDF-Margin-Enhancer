@@ -61,20 +61,19 @@ const initPdfium = async () => {
 
 const getTightContentBounds = (pdfium, page, width, height, origL, origB, origR, origT) => {
     // --- CONFIGURATION ---
-    let SCALE = 1.0;         // Optimized: 1.0 is sufficient for margin detection (was 2.0)
-    const THRESHOLD = 250;   // 0-255. Pixels lighter than this are considered "white". 
-                             // 250 filters out compression noise while keeping light content.
-    const MAX_DIM = 4000;    // Cap rendering size to prevent OOM/Hangs on huge pages
+    const TARGET_DIM = 2000; // Target dimension for rendering (balance speed/accuracy)
+    const THRESHOLD = 250;   // 0-255. Pixels lighter than this are considered "white".
     // ---------------------
 
     // Normalize dimensions
     width = Math.abs(width);
     height = Math.abs(height);
 
-    // Downscale if too large
-    if (width > MAX_DIM || height > MAX_DIM) {
-        const ratio = Math.min(MAX_DIM / width, MAX_DIM / height);
-        SCALE = ratio;
+    // Calculate Scale to hit TARGET_DIM (handles both huge pages and tiny inch-unit pages)
+    const maxDim = Math.max(width, height);
+    let SCALE = 1.0;
+    if (maxDim > 0) {
+        SCALE = TARGET_DIM / maxDim;
     }
 
     // Ensure integer dimensions for the bitmap
@@ -405,7 +404,14 @@ self.onmessage = async (e) => {
                     typicalContentHeight = 500; // Fallback
                 }
 
-                const { width: wd, height: hd, epsilon = 0 } = config.tablet;
+                const { width: wd, height: hd, epsilon: rawEpsilon = 0 } = config.tablet;
+                
+                // Heuristic: If page is in points (>200) but epsilon is small (<5), assume inches and convert.
+                let epsilon = rawEpsilon;
+                if (typicalContentHeight > 200 && epsilon > 0 && epsilon < 5) {
+                    epsilon *= 72;
+                }
+
                 const targetRatio = wd / hd;
 
                 // Calculate base dimensions for a "typical" page
